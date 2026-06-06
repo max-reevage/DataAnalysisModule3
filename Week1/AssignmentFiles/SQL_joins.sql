@@ -93,10 +93,39 @@ inner join stores as s on s.store_id = e.store_id
 where e.title = 'Manager';
 -- Q8) Using a subquery/CTE: list products whose total PAID revenue is above
 --     the average PAID product revenue. Return product_name, total_revenue.
-
+with product_revenue as(
+	select
+		p.name as product_name,
+		sum(oi.quantity * p.price) as total_revenue
+	from order_items as oi
+	inner join orders as o on oi.order_id = o.order_id
+	inner join products as p on oi.product_id = p.product_id
+	where o.status = 'paid'
+    group by p.name
+	)
+select product_name, total_revenue
+	from product_revenue
+    where total_revenue > (select avg(total_revenue) from product_revenue);
 -- Q9) Churn-ish check: list customers with their last PAID order date.
 --     If they have no PAID orders, show NULL.
 --     Hint: Put the status filter in the LEFT JOIN's ON clause to preserve non-buyer rows.
-
+select
+	concat(c.first_name, ' ', c.last_name) as customer_name,
+    max(o.order_datetime) as last_order_date
+from customers as c
+left join orders as o on c.customer_id = o.customer_id AND o.status = 'paid'
+group by c.customer_id, c.first_name, c.last_name;
 -- Q10) Product mix report (PAID only):
 --     For each store and category, show total units and total revenue (= SUM(quantity * products.price)).
+select
+	s.name as store_name,
+    c.name as category_name,
+    sum(oi.quantity) as total_units,
+    sum(oi.quantity * p.price) as total_revenue
+from order_items as oi
+inner join orders as o on o.order_id = oi.order_id
+inner join stores as s on o.store_id = s.store_id
+inner join products as p on p.product_id = oi.product_id
+inner join categories as c on c.category_id = p.category_id
+where o.status = 'paid'
+group by s.name, c.name;
