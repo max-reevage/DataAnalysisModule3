@@ -162,7 +162,28 @@ having count(distinct o.store_id) = (select count(*) from stores);
 -- Return: customer_name, order_id, order_datetime, prev_order_datetime, minutes_since_prev.
 -- Only show rows where prev_order_datetime is NOT NULL.
 -- Sort by customer_name, order_datetime.
-
+with order_history as (
+	select
+		concat(c.first_name, ' ', c.last_name) as customer_name,
+        o.order_id,
+        o.order_datetime,
+        lag(o.order_datetime) over (
+			partition by o.customer_id
+            order by o.order_datetime
+		) as prev_order_datetime
+	from customers c
+    join orders o on c.customer_id = o.customer_id
+    where o.status = 'paid'
+)
+select
+	customer_name,
+    order_id,
+    order_datetime,
+    prev_order_datetime,
+    timestampdiff(minute, prev_order_datetime, order_datetime) as minutes_since_prev
+from order_history
+where prev_order_datetime is not null
+order by customer_name, order_datetime;
 -- =========================================================
 -- Q7) View: Create a reusable order line view for PAID orders
 -- =========================================================
@@ -172,12 +193,40 @@ having count(distinct o.store_id) = (select count(*) from stores);
 --   product_id, product_name, category_name,
 --   quantity, unit_price (= products.price),
 --   line_total (= quantity * products.price)
---
+-- 
 -- After creating the view, write a SELECT that uses the view to return:
 --   store_name, category_name, revenue
 -- where revenue is SUM(line_total),
 -- sorted by revenue DESC.
+create view v_paid_order_lines as
+select
+	o.order_id,
+    o.order_datetime,
+    s.store_id,
+    s.name AS store_name,
+    c.customer_id,
+    CONCAT(c.first_name, ' ', c.last_name) AS customer_name,
+    p.product_id,
+    p.name AS product_name,
+    cat.name AS category_name,
+    oi.quantity,
+    p.price AS unit_price,
+    (oi.quantity * p.price) AS line_total
+from orders o
+join stores s on o.store_id = s.store_id
+join customers c on o.customer_id = c.customer_id
+join order_items oi on o.order_id = oi.order_id
+join products p on oi.product_id = p.product_id
+join categories cat on p.category_id = cat.category_id
+where o.status = 'paid';
 
+select
+store_name,
+category_name,
+sum(line_total) as revenue
+from v_paid_order_lines
+group by store_name, category_name
+order by revenue desc;
 -- =========================================================
 -- Q8) View + window: Store revenue share by payment method (PAID only)
 -- =========================================================
@@ -190,7 +239,27 @@ having count(distinct o.store_id) = (select count(*) from stores);
 --   store_total_revenue (window SUM over store),
 --   pct_of_store_revenue (= revenue / store_total_revenue)
 -- Sort by store_name, revenue DESC.
+create view v_paid_store_payments as
+select
+	s.store_id,
+	s.name as store_name,
+	o.payment_method,
+	sum(oi.quantity * p.price) as revenue
+from stores s
+join orders o on s.store_id = o.store_id
+join order_items oi on o.order_id = oi.order_id
+join products p on oi.product_id = p.product_id
+where o.status = 'paid'
+group by s.store_id, s.name, o.payment_method;
 
+select
+	store_name,
+    payment_method,
+    revenue,
+    sum(revenue) over(partition by store_name) as store_total_revenue,
+    revenue / sum(revenue) over(partition by store_name) as pct_of_store_revenue
+from v_paid_store_payments
+order by store_name, revenue desc;
 -- =========================================================
 -- Q9) CTE: Inventory risk report (low stock relative to sales)
 -- =========================================================
@@ -200,3 +269,25 @@ having count(distinct o.store_id) = (select count(*) from stores);
 --   on_hand < total_units_sold
 -- Return: store_name, product_name, on_hand, total_units_sold, units_gap (= total_units_sold - on_hand)
 -- Sort by units_gap DESC.
+with recent_sales as (
+	select
+		o.store_id,
+        oi.product_id,
+        sum(oi.quantity) as total_units_sold
+	from orders o
+    join order_items oi on o.order_id = oi.order_id
+    where o.status = 'paid'
+    group by o.store_id, oi.product_id
+)
+select
+	s.name as store_name,
+    p.name as product_name,
+    i.on_hand,
+    rs.total_units_sold,
+    (rs.total_units_sold - i.on_hand) as units_gap
+from inventory i
+join recent_sales rs on i.store_id = rs.store_id and i.product_id = rs.product_id
+join stores s on i.store_id = s.store_id
+join products p on i.product_id = p.product_id
+where i.on_hand < rs.total_units_sold
+order by units_gap desc;
